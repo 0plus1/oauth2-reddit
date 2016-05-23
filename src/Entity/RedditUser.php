@@ -23,6 +23,21 @@ class RedditUser
     protected $is_over_18;
 
     /**
+     * @var timestamp
+     */
+    protected $created_at;
+
+    /**
+     * @var int
+     */
+    protected $link_karma;
+
+    /**
+     * @var int
+     */
+    protected $comment_karma;
+
+    /**
      * TwitchUser constructor.
      * @param array $attributes
      */
@@ -31,6 +46,9 @@ class RedditUser
         $this->id = $attributes['id'];
         $this->username = $attributes['name'];
         $this->is_over_18 = $attributes['over_18'];
+        $this->created_at = $attributes['created'];
+        $this->link_karma = $attributes['link_karma'];
+        $this->comment_karma = $attributes['comment_karma'];
     }
 
     /**
