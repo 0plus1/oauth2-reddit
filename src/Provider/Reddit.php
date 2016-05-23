@@ -1,14 +1,32 @@
-<?php
-
-namespace Rudolf\OAuth2\Client\Provider;
+<?php namespace Rudolf\OAuth2\Client\Provider;
 
 use League\OAuth2\Client\Provider\AbstractProvider;
 use League\OAuth2\Client\Token\AccessToken;
-use Rudolf\OAuth2\Client\Grant\InstalledClient;
-use InvalidArgumentException;
+use Psr\Http\Message\ResponseInterface;
+use Rudolf\OAuth2\Client\Entity\RedditUser;
+use Rudolf\OAuth2\Client\Provider\Exception\RedditIdentityProviderException;
 
 class Reddit extends AbstractProvider
 {
+
+    /**
+     * Api domain
+     *
+     * @var string
+     */
+    public $apiDomain = 'https://ssl.reddit.com';
+
+    /**
+     * Api domain for token based requests
+     * @var string
+     */
+    public $apiDomainWithToken = 'https://oauth.reddit.com';
+
+    /**
+     * @var array
+     */
+    public $scopes = [ 'identity' ];
+
     /**
      * User agent string required by Reddit
      * Format <platform>:<app ID>:<version string> (by /u/<reddit username>)
@@ -18,120 +36,152 @@ class Reddit extends AbstractProvider
     public $userAgent = "";
 
     /**
+     * @var string
+     */
+    public $duration = 'temporary';
+
+    /**
      * {@inheritDoc}
      */
     public $authorizationHeader = "bearer";
 
     /**
-     * {@inheritDoc}
-     */
-    public function urlAuthorize()
-    {
-        return "https://ssl.reddit.com/api/v1/authorize";
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    public function urlAccessToken()
-    {
-        return "https://ssl.reddit.com/api/v1/access_token";
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    public function urlUserDetails(AccessToken $token)
-    {
-        return "https://oauth.reddit.com/api/v1/me";
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    public function userDetails($response, AccessToken $token)
-    {
-        return $response;
-    }
-
-    /**
-     * Returns the user agent, which is required to be set.
+     * Get authorization url to begin OAuth flow
      *
      * @return string
-     * @throws Rudolf\OAuth2\Client\Exception\ProviderException
      */
-    protected function getUserAgent()
+    public function getBaseAuthorizationUrl()
     {
-        if ($this->userAgent) {
-            return $this->userAgent;
-        }
-
-        // Use the server user agent as a fallback if no explicit one was set.
-        return $_SERVER["HTTP_USER_AGENT"];
+        return $this->apiDomain.'/api/v1/authorize';
     }
 
-
     /**
-     * Validates that the user agent follows the Reddit API guide.
-     * Pattern: <platform>:<app ID>:<version string> (by /u/<reddit username>)
+     * Get access token url to retrieve token
      *
-     * @throws Rudolf\OAuth2\Client\Exception\ProviderException
+     * @param  array $params
+     *
+     * @return string
      */
-    protected function validateUserAgent()
+    public function getBaseAccessTokenUrl(array $params)
     {
-        if ( ! preg_match("~^.+:.+:.+ \(by /u/.+\)$~", $this->getUserAgent())) {
-            throw new InvalidArgumentException("User agent is not valid");
+        return $this->apiDomain.'/api/v1/access_token';
+    }
+
+    /**
+     * Get provider url to fetch user details
+     *
+     * @param  AccessToken $token
+     *
+     * @return string
+     */
+    public function getResourceOwnerDetailsUrl(AccessToken $token)
+    {
+        return $this->apiDomainWithToken.'/api/v1/me.json';
+    }
+
+    /**
+     * Returns the string that should be used to separate scopes when building
+     * the URL for requesting an access token.
+     *
+     * @return string Scope separator
+     */
+    protected function getScopeSeparator()
+    {
+        return ' ';
+    }
+
+    /**
+     * Get the default scopes used by this provider.
+     *
+     * This should not be a complete list of all scopes, but the minimum
+     * required for the provider user interface!
+     *
+     * @return array
+     */
+    protected function getDefaultScopes()
+    {
+        return $this->scopes;
+    }
+
+    /**
+     * @param ResponseInterface $response
+     * @param array|string $data
+     */
+    protected function checkResponse(ResponseInterface $response, $data)
+    {
+        if ($response->getStatusCode() >= 400)
+        {
+            throw RedditIdentityProviderException::clientException($response, $data);
+        }
+        elseif (isset($data['error']))
+        {
+            throw RedditIdentityProviderException::oauthException($response, $data);
         }
     }
 
     /**
-     * {@inheritDoc}
+     * Generate a user object from a successful user details request.
+     *
+     * @param array $response
+     * @param AccessToken $token
+     * @return TwitchUser
+     */
+    protected function createResourceOwner(array $response, AccessToken $token)
+    {
+        return new RedditUser((array)$response);
+    }
+
+    /**
+     * Builds the authorization URL.
+     *
+     * @param  array $options
+     * @return string Authorization URL
+     */
+    public function getAuthorizationUrl(array $options = [])
+    {
+        $options['duration'] = $this->duration;
+
+        return parent::getAuthorizationUrl($options);
+    }
+
+    /**
+     * Returns all headers used by this provider for a request.
+     *
+     * The request will be authenticated if an access token is provided.
+     *
+     * @param  mixed|null $token object or string
+     * @return array
      */
     public function getHeaders($token = null)
     {
-        $this->validateUserAgent();
-
-        $headers = [
-            "User-Agent" => $this->getUserAgent(),
-        ];
-
-        // We have to use HTTP Basic Auth when requesting an access token
-        if ( ! $token) {
-            $auth = base64_encode("{$this->clientId}:{$this->clientSecret}");
-            $headers["Authorization"] = "Basic $auth";
+        if ($token) {
+            return array_merge(
+                $this->getDefaultHeaders(),
+                $this->getAuthorizationHeaders($token)
+            );
         }
-
-        return array_merge(parent::getHeaders($token), $headers);
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * @see https://github.com/reddit/reddit/wiki/OAuth2
-     */
-    public function getAccessToken($grant = "authorization_code", $params = [])
-    {
-        // Allow Reddit-specific 'installed_client' to be specified as a string,
-        // keeping consistent with the other grant types.
-        if ($grant === "installed_client") {
-            $grant = new InstalledClient();
+        else
+        {
+            return array_merge(
+                $this->getDefaultHeaders(),
+                ['Authorization' => 'Basic '.base64_encode($this->clientId.':'.$this->clientSecret)]
+            );
         }
-
-        return parent::getAccessToken($grant, $params);
     }
 
     /**
      * {@inheritDoc}
      */
-    public function getAuthorizationUrl($options = [])
+    protected function getDefaultHeaders()
     {
-        $url = parent::getAuthorizationUrl();
+        return [ 'User-Agent' => $this->userAgent ];
+    }
 
-        // This is required as an option to be given a refresh token
-        if (isset($options["duration"])) {
-            $url .= "&duration={$options['duration']}";
-        }
-
-        return $url;
+    /**
+     * {@inheritDoc}
+     */
+    protected function getAuthorizationHeaders($token = null)
+    {
+        return ['Authorization' => 'bearer '.$token];
     }
 }
